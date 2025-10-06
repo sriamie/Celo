@@ -1,0 +1,143 @@
+env = os.environ['CATALOG']
+chunk_path = f"/Volumes/{env}_finance/{raw_volume_name}/full/{folder_name}/"
+index = 0  # inizializza fuori dal ciclo
+
+os.makedirs(chunk_path, exist_ok=True)
+
+for chunk in get_data_analysis_celonis_chunked(
+        cl_login,
+        data_pool_id,
+        data_model_id,
+        space_id,
+        package_id,
+        analysis_id,
+        olap_table_id,
+        sheet_index,
+        set_distinct,
+        chunk_size=200_000,
+        as_generator=True
+    ):
+    filename = f"{chunk_path}{file_name.split('.')[0]}_{index}.csv"
+    chunk.to_csv(filename, index=False)
+    index += 1
+
+chunk_path = f"/Volumes/{env}_finance/{raw_volume_name}/full/{folder_name}/"
+pattern = os.path.join(chunk_path, file_name.split('.')[0] + "_*.csv")
+
+# Lista di tutti i file CSV dei chunk
+csv_files = sorted(glob.glob(pattern))
+
+df_cl_WIOrganizationalStructure= spark.read.option("header", True).csv(csv_files)
+df_cl_WIOrganizationalStructure.createOrReplaceTempView("df_cl_WIOrganizationalStructure")
+
+
+def get_data_analysis_celonis(login: dict, cl_data_pool: str, cl_data_model: str, cl_space: str, cl_package: str, cl_analysis: str, cl_olap_table: str, cl_sheet: int,
+                              cl_set_distinct: str, cl_query_str = "", convert_to_string = "Y") -> pd.DataFrame:
+  
+  celonis = get_celonis(**login)
+  data_pool = celonis.data_integration.get_data_pools().find_by_id(cl_data_pool)
+  data_model = data_pool.get_data_models().find_by_id(cl_data_model)
+  space = celonis.apps.get_space(cl_space)
+  package = space.get_package(cl_package)
+  analysis = package.get_analysis(cl_analysis)
+  published_sheet = analysis.get_content().draft.document.sheets[cl_sheet]
+  olap_table = published_sheet.components.find(cl_olap_table, search_attribute="id")
+  olap_query = olap_table.get_query()
+  data_query, query_environment = analysis.resolve_query(olap_query)
+
+  if cl_query_str == "":
+    df = data_model.export_to_data_frame(data_query, query_environment)
+  else:
+    data_query = DataQuery(computation_id=0, queries=[cl_query_str], is_transient=False)
+    df = data_model.export_data_frame(data_query, query_environment)
+  
+  if convert_to_string == "Y":
+    df = df.astype(str)
+  
+  if(cl_set_distinct == "Y"):
+    df = df.drop_duplicates()
+    
+  return df
+
+
+
+def get_data_analysis_celonis_chunked(
+    login: dict,
+    cl_data_pool: str,
+    cl_data_model: str,
+    cl_space: str,
+    cl_package: str,
+    cl_analysis: str,
+    cl_olap_table: str,
+    cl_sheet: int,
+    cl_set_distinct: str,
+    cl_query_str: str = "",
+    convert_to_string: str = "Y",
+    chunk_size: int = 100_000,
+    as_generator: bool = False
+) -> pd.DataFrame:
+ 
+    celonis = get_celonis(**login)
+    data_pool = celonis.data_integration.get_data_pools().find_by_id(cl_data_pool)
+    data_model = data_pool.get_data_models().find_by_id(cl_data_model)
+ 
+    space = celonis.apps.get_space(cl_space)
+    package = space.get_package(cl_package)
+    analysis = package.get_analysis(cl_analysis)
+    published_sheet = analysis.get_content().draft.document.sheets[cl_sheet]
+    olap_table = published_sheet.components.find(cl_olap_table, search_attribute="id")
+ 
+    # Base PQL dalla OLAP table o da stringa PQL passata
+    if cl_query_str == "":
+        base_pql = olap_table.get_query()  # PQL object
+    else:
+        base_pql = PQL(cl_query_str)       # PQL string -> PQL object
+ 
+    # Scegli export function disponibile
+    def _export(df_query, query_env):
+        # preferisci metodo di istanza se presente
+        if hasattr(data_model, "export_data_frame"):
+            return data_model.export_data_frame(df_query, query_env)
+        # fallback statico (richiede client/pool_id/data_model_id)
+        return DataModel.export_data_frame_from(
+            client=celonis.client,
+            pool_id=data_model.pool_id,
+            data_model_id=data_model.id,
+            query=df_query,
+            query_environment=query_env
+        )
+ 
+    def _post(df: pd.DataFrame) -> pd.DataFrame:
+        if convert_to_string == "Y":
+            df = df.astype(str)
+        if cl_set_distinct == "Y":
+            df = df.drop_duplicates()
+        return df
+ 
+    def _iter_chunks():
+        offset = 0
+        while True:
+            pql_chunk = deepcopy(base_pql)
+            pql_chunk.limit = chunk_size
+            pql_chunk.offset = offset
+ 
+            # Risolvi la PQL nell’ambiente dell’Analysis (variabili/KPI)
+            data_query, query_env = analysis.resolve_query(pql_chunk)
+ 
+            chunk = _export(data_query, query_env)
+            if chunk is None or chunk.empty:
+                break
+ 
+            yield _post(chunk)
+ 
+            if len(chunk) < chunk_size:
+                break
+            offset += chunk_size
+ 
+    if as_generator:
+        return _iter_chunks()
+ 
+    chunks = list(_iter_chunks())
+    if not chunks:
+        return pd.DataFrame()
+    return pd.concat(chunks, ignore_index=True)
