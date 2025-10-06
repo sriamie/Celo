@@ -1,0 +1,30 @@
+
+import httpx
+httpx.__version__
+import os
+import pycelonis
+import pandas as pd
+import pyarrow
+from pycelonis import get_celonis
+from pyspark.sql import DataFrame, functions as F
+from pycelonis.service.integration.service import DataQuery
+import pycelonis.pql as pql
+from pycelonis.pql.saola_connector import AnalysisSaolaConnector
+from pycelonis.pql import PQL, PQLColumn, PQLFilter
+from pycelonis.pql.saola_connector import KnowledgeModelSaolaConnector
+def celonis_to_deltalake(df: pd.DataFrame, path_parquet: str):
+  df.to_parquet(path_parquet,  index=False, engine="pyarrow")
+  del(df)
+
+def xlsx_float_format(excel_sheet, list_cols, row_start, col_start, row_header_index, float_format):
+  rows = [i for i in range(row_start, excel_sheet.max_row + 1)]
+    
+  for j in range(col_start,  excel_sheet.max_column + 1):
+    if excel_sheet.cell(row=row_header_index, column=j).value in list_cols:
+      for r in rows:
+        excel_sheet.cell(row=r, column=j).number_format = "0.00"
+
+def getTimestampUTC():
+  now_utc = datetime.now(timezone.utc)
+  timestamp_str = now_utc.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] + '+00:00'
+  return timestamp_str
