@@ -1,0 +1,13 @@
+path_cl_tmp_parquet =  f"/Volumes/{env}_finance/{raw_volume_name}/full/{folder_name}/tmp"
+path_cl_parquet= f"/Volumes/{env}_finance/{raw_volume_name}/full/{folder_name}/{file_name}"
+(df_cl_WIOrganizationalStructure.coalesce(1)
+   .write
+   .mode("overwrite")
+   .format("parquet")
+   .save(path_cl_tmp_parquet))
+
+files = dbutils.fs.ls(path_cl_tmp_parquet)
+part_file = [f.path for f in files if f.name.endswith(".parquet")][0]
+dbutils.fs.rm(path_cl_parquet, True)
+dbutils.fs.mv(part_file, path_cl_parquet,True)
+dbutils.fs.rm(path_cl_tmp_parquet, True)
